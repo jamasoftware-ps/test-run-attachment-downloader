@@ -1,0 +1,327 @@
+const fs = require("fs");
+const archiver = require("archiver");
+const log = require("electron-log");
+
+let reply; // This variable will store the callback function to reply to the front end.
+
+// This object will store our response content for the front end.
+// Response object structure:
+// response.isCanceled set to True if error caused operation abort
+// response.progress An object containing progress updates
+// response.progress.value  A number between 0-100 dentoing the percent of progress towards completion.
+// response.progress.status A String stating the current operating status of the operation
+// response.isComplete set to True when the operation has completed.
+let majorIncrement = 0;
+let minorIncrement = 0;
+
+let response = {
+  isCanceled: false,
+  isComplete: false,
+  progress: {
+    value: 0,
+    status: "started",
+  },
+};
+
+// config object structure:
+// config.project: Object of project info
+// config.sourceType: Either "Filter" or "Test Cycle"
+// config.value: Object representing a Filter if sourceType is "Filter" or a Array of Test Cycle objects if source type is "Test Cycle"
+// config.saveLocation: String denoting where the zip file generated should be saved.
+// config.client: The configured JamaClient object ready and available for use.
+// config.reply: A function that allows IPC communication with front end window for status updates.
+function downloadAttachments(config) {
+  // Configure zip archive for writing.
+  reply = config.reply;
+  let zipArchiver = setupArchiver(config.saveLocation);
+
+  // reset Response object:
+  response = {
+    isCanceled: false,
+    isComplete: false,
+    progress: {
+      value: 0,
+      status: "started",
+    },
+  };
+
+  let workPromise;
+  // Determine Source Type: Filter vs Test Cycle
+  if (config.sourceType === "Filter") {
+    workPromise = processFilter(
+      config.project,
+      config.value,
+      config.client,
+      zipArchiver
+    );
+  } else if (config.sourceType === "Test Cycle") {
+    let testCyclesToProcess = config.value.slice();
+    workPromise = processTestCycles(
+      testCyclesToProcess,
+      config.client,
+      zipArchiver
+    );
+  } else {
+    log.error("Invalid source type. Aborting.");
+    throw new Error("Invalid source type");
+  }
+  workPromise
+    .then(() => {
+      response.isComplete = true;
+      response.progress.value = 100;
+    })
+    .catch((err) => {
+      log.error(err);
+      response.isCanceled = true;
+    })
+    .then(() => {
+      zipArchiver.finalize();
+    });
+}
+
+//###############################################################################################################
+//                          PROCESS TEST CYCLES
+//###############################################################################################################
+
+// Process an array of test cycles
+function processTestCycles(testCycles, jamaClient, zipArchiver) {
+  majorIncrement = Math.floor(100 / testCycles.length);
+  let testCyclesProcessed = 0;
+  return testCycles.reduce((accumulatorPromise, nextTestCycle) => {
+    return accumulatorPromise.then(() => {
+      response.progress.value = majorIncrement * testCyclesProcessed;
+      testCyclesProcessed += 1;
+      return processTestCycle(nextTestCycle, jamaClient, zipArchiver);
+    });
+  }, Promise.resolve());
+}
+
+// Process ONE test cycle.
+// Do the following:
+// 1: Pull all test runs for this test cycle
+// 2: For each test run:
+//    A: Check test run for attachments
+// Download any attachments and save into zip file.
+function processTestCycle(testCycle, jamaClient, zipArchiver) {
+  log.info(`Processing test cycle: [${testCycle.id}] ${testCycle.fields.name}`);
+  // Pull Test Plan for this test cycle
+  let cycleInfo = [
+    jamaClient.getSinglePage(`testplans/${testCycle.fields.testPlan}`),
+    jamaClient.getAll(`testcycles/${testCycle.id}/testruns`),
+  ];
+  let testPlan;
+  let testRuns;
+  return Promise.all(cycleInfo)
+    .then((values) => {
+      // Extract values
+      testPlan = values[0].data.data;
+      testRuns = values[1].data;
+
+      // Now check each test run for attachments.
+      return Promise.all(
+        testRuns.map((testRun) =>
+          jamaClient.getAll(`testruns/${testRun.id}/attachments`)
+        )
+      );
+    })
+    .then((values) => {
+      let totalAttachmentCount = 0;
+      values.forEach((value, index) => {
+        testRuns[index].attachments = value.data;
+        totalAttachmentCount += value.data.length;
+      });
+      minorIncrement = Math.floor(minorIncrement / totalAttachmentCount);
+      if (minorIncrement < 1) minorIncrement = 1;
+      return testRuns.reduce((accumulatorPromise, nextTestRun) => {
+        return accumulatorPromise.then(() => {
+          return processTestRunAttachments(
+            nextTestRun,
+            testCycle,
+            testPlan,
+            jamaClient,
+            zipArchiver
+          );
+        });
+      }, Promise.resolve());
+    });
+}
+
+//###############################################################################################################
+//                          PROCESS FILTERS
+//###############################################################################################################
+
+// Process ONE filter.
+function processFilter(project, filter, jamaClient, zipArchiver) {
+  log.info(`Processing filter: [${filter.id}] ${filter.name}`);
+  majorIncrement = 100;
+
+  // If the project scope for this filter is CURRENT, then we must specify the desired project ID as a param
+  let includeParams = new URLSearchParams();
+  includeParams.append("include", "data.fields.testPlan");
+  includeParams.append("include", "data.fields.testCycle");
+  includeParams.append("include", "data.itemType");
+
+  if (filter.projectScope === "CURRENT")
+    includeParams.append("project", project.id);
+
+  let testRuns = [];
+  let itemTypes;
+  let testPlans;
+  let testCycles;
+
+  // Fetch the filter results.
+  return jamaClient
+    .getAll(`filters/${filter.id}/results`, includeParams)
+    .then((filterResults) => {
+      // Ensure filter only contains testruns, remove non test run items from results.
+      itemTypes = filterResults.linked.itemtypes;
+      testPlans = filterResults.linked.testplans;
+      testCycles = filterResults.linked.testcycles;
+      filterResults.data.forEach((filterResult) => {
+        // Check ItemType
+        let itemType = itemTypes[filterResult.itemType];
+        if (itemType.typeKey === "TSTRN") {
+          // Valid Item type.
+          // Append to list of testRuns to fetch attachments for.
+          testRuns.push(filterResult);
+        } else {
+          log.error(
+            `Item [${filterResult.id}] is not of type Test Run. Item will not be processed.`
+          );
+        }
+      });
+
+      // For each Test Run returned we must fetch the attachments
+      return Promise.all(
+        testRuns.map((testRun) =>
+          jamaClient.getAll(`testruns/${testRun.id}/attachments`)
+        )
+      );
+    })
+    .then((values) => {
+      let totalAttachmentCount = 0;
+      values.forEach((value, index) => {
+        testRuns[index].attachments = value.data;
+        totalAttachmentCount += value.data.length;
+      });
+      minorIncrement = Math.floor(majorIncrement / totalAttachmentCount);
+      if (minorIncrement < 1) minorIncrement = 1;
+      return testRuns.reduce((accumulatorPromise, nextTestRun) => {
+        return accumulatorPromise.then(() => {
+          return processTestRunAttachments(
+            nextTestRun,
+            testCycles[nextTestRun.fields.testCycle],
+            testPlans[nextTestRun.fields.testPlan],
+            jamaClient,
+            zipArchiver
+          );
+        });
+      }, Promise.resolve());
+    });
+}
+
+//###############################################################################################################
+//                          UTILITY FUNCTIONS
+//###############################################################################################################
+
+// Processes a list of attachments for a Single testRun
+function processTestRunAttachments(
+  testRun,
+  testCycle,
+  testPlan,
+  jamaClient,
+  zipArchiver
+) {
+  log.info("Processing Test Run: ", testRun.id);
+
+  let folderPath = `${testPlan.documentKey}_${testPlan.fields.name}/${testCycle.documentKey}_${testCycle.fields.name}/${testRun.documentKey}_`;
+  // Process each attachment for this test run one at a time to avoid API overload.
+  return testRun.attachments.reduce((accumulatorPromise, nextAttachment) => {
+    return accumulatorPromise.then(() => {
+      return downloadAttachment(
+        nextAttachment,
+        folderPath,
+        jamaClient,
+        zipArchiver
+      );
+    });
+  }, Promise.resolve());
+}
+
+// Download attachment file to zip archive.
+function downloadAttachment(attachment, folderPath, jamaClient, zipArchiver) {
+  // return new Promise((resolve, reject) => {
+  // Get stream from jamaclient
+  return jamaClient.getFileStream(attachment.id).then(async (stream) => {
+    log.info("Downloading attachment: ", attachment.id);
+    let savePath = `${folderPath}${attachment.fields.attachment}_${attachment.fileName}`;
+    // Write to archiver
+    zipArchiver.append(stream.data, { name: savePath });
+
+    // remove this await promise to allow multiple streams to be downloaded at once.
+    // Note: that allowing multiple streams to be started may cause issues, as only one stream may be consumed by the
+    // archiver at a time.
+    await new Promise((fulfill) => {
+      stream.data.on("end", fulfill);
+    });
+    log.debug("Download complete.");
+    response.progress.value += minorIncrement;
+    sendProgressUpdate();
+  });
+}
+
+// Call this function to update the user / front end with the status of this module.
+function sendProgressUpdate() {
+  reply("jama-api-download-attachments-response", response);
+}
+
+// Initialize archive utility
+function setupArchiver(outputFilePath) {
+  // create a file to stream archive data to.
+  const output = fs.createWriteStream(outputFilePath);
+  const archive = archiver("zip", {
+    zlib: { level: 9 }, // Sets the compression level.
+  });
+
+  // listen for all archive data to be written
+  // 'close' event is fired only when a file descriptor is involved
+  output.on("close", function () {
+    log.info(archive.pointer() + " total bytes");
+    log.info(
+      "archiver has been finalized and the output file descriptor has closed."
+    );
+    sendProgressUpdate();
+  });
+
+  // This event is fired when the data source is drained no matter what was the data source.
+  // It is not part of this library but rather from the NodeJS Stream API.
+  // @see: https://nodejs.org/api/stream.html#stream_event_end
+  output.on("end", function () {
+    log.info("Data has been drained");
+  });
+
+  // good practice to catch warnings (ie stat failures and other non-blocking errors)
+  archive.on("warning", function (err) {
+    if (err.code === "ENOENT") {
+      // log warning
+      log.error(err);
+    } else {
+      // throw error
+      log.error(err);
+      throw err;
+    }
+  });
+
+  // good practice to catch this error explicitly
+  archive.on("error", function (err) {
+    log.error(err);
+    throw err;
+  });
+
+  // pipe archive data to the file
+  archive.pipe(output);
+
+  return archive;
+}
+
+exports.downloadAttachments = downloadAttachments;
