@@ -23,6 +23,9 @@ let response = {
   },
 };
 
+// This object will keep track of the filenames that have been written to the zipArchiver.
+let fileNames = {};
+
 // config object structure:
 // config.project: Object of project info
 // config.sourceType: Either "Filter" or "Test Cycle"
@@ -44,6 +47,9 @@ function downloadAttachments(config) {
       status: "started",
     },
   };
+
+  // Reset the filenames object:
+  fileNames = {};
 
   let workPromise;
   // Determine Source Type: Filter vs Test Cycle
@@ -234,7 +240,7 @@ function processTestRunAttachments(
 ) {
   log.info("Processing Test Run: ", testRun.id);
 
-  let folderPath = `${testPlan.documentKey}_${testPlan.fields.name}/${testCycle.documentKey}_${testCycle.fields.name}/${testRun.documentKey}_`;
+  let folderPath = `${testPlan.documentKey}_${testPlan.fields.name}/${testCycle.documentKey}_${testCycle.fields.name}/${testRun.documentKey}_${testRun.fields.name}/`;
   // Process each attachment for this test run one at a time to avoid API overload.
   return testRun.attachments.reduce((accumulatorPromise, nextAttachment) => {
     return accumulatorPromise.then(() => {
@@ -254,7 +260,8 @@ function downloadAttachment(attachment, folderPath, jamaClient, zipArchiver) {
   // Get stream from jamaclient
   return jamaClient.getFileStream(attachment.id).then(async (stream) => {
     log.info("Downloading attachment: ", attachment.id);
-    let savePath = `${folderPath}${attachment.fields.attachment}_${attachment.fileName}`;
+    let savePath = validateFileName(folderPath, attachment.fileName);
+
     // Write to archiver
     zipArchiver.append(stream.data, { name: savePath });
 
@@ -268,6 +275,44 @@ function downloadAttachment(attachment, folderPath, jamaClient, zipArchiver) {
     response.progress.value += minorIncrement;
     sendProgressUpdate();
   });
+}
+
+// This function will check to ensure no filenames are duplicated, and if they are it will append a (1), (2) ... ect to the end of the name to make it unique.
+function validateFileName(folder, fileName) {
+  let savePath = `${folder}${fileName}`;
+  // Check if file already exists in archive
+  if (savePath in fileNames) {
+    // Get the dupe number and increment the store.
+    let dupeNumber = fileNames[savePath] + 1;
+    fileNames[savePath] = dupeNumber;
+
+    // Split attachment filename on file '.' to isoloate file extension and add duplicate counter before file extension.
+    let newFileName = "";
+    let filenameParts = fileName.split(".");
+
+    if (filenameParts.length === 1) {
+      // This filename contains no '.' just add the dupe count to the end.
+      newFileName = `${fileName} (${dupeNumber})`;
+    } else {
+      // Filename contains at least one '.'  append dupe number before the last entry
+      for (let i = 0; i < filenameParts.length - 1; i++) {
+        if (i !== 0) {
+          newFileName += ".";
+        }
+        newFileName += filenameParts[i];
+      }
+      newFileName += ` ${dupeNumber}.${
+        filenameParts[filenameParts.length - 1]
+      }`;
+    }
+
+    savePath = `${folder}${newFileName}`;
+  } else {
+    // No file exists with this name, enter into store.
+    fileNames[savePath] = 0;
+  }
+
+  return savePath;
 }
 
 // Call this function to update the user / front end with the status of this module.
