@@ -240,7 +240,7 @@ function processTestRunAttachments(
 ) {
   log.info("Processing Test Run: ", testRun.id);
 
-  let folderPath = `${testPlan.documentKey}_${testPlan.fields.name}/${testCycle.documentKey}_${testCycle.fields.name}/${testRun.documentKey}_${testRun.fields.name}/`;
+  let folderPath = `${testPlan.documentKey}/${testCycle.documentKey}/${testRun.documentKey}/`;
   // Process each attachment for this test run one at a time to avoid API overload.
   return testRun.attachments.reduce((accumulatorPromise, nextAttachment) => {
     return accumulatorPromise.then(() => {
