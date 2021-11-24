@@ -6,6 +6,9 @@ const path = require("path");
 const isDev = require("electron-is-dev");
 let mainWindow;
 
+electron.commandLine.appendSwitch('ignore-certificate-errors');
+electron.commandLine.appendSwitch('allow-insecure-localhost', 'true');
+
 function createWindow() {
   mainWindow = new BrowserWindow({
     width: 1200,

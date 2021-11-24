@@ -176,6 +176,9 @@ class JamaClient {
       params: params,
     };
 
+    log.info(`Fetching single page: ${path}`);
+    log.debug(`Request options: ${JSON.stringify(requestOptions)}`);
+
     // Check Oauth token
     if (this._authMode === "oauth") {
       await this.checkOAuthToken();
