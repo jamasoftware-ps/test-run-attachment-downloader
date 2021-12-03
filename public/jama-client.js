@@ -27,7 +27,7 @@ class JamaClient {
     username,
     password,
     authMode,
-    { maxResutls = 50, apiVersion = "/rest/v1", maxRPS = 10, verifySSL = true }
+    { maxResutls = 50, apiVersion = "/rest/v1", maxRPS = 10, verifySSL = false }
   ) {
     // Validate options: if outside valid range set to defaults.
     if (maxResutls < 1) this._maxResutls = 1;
