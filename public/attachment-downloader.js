@@ -8,7 +8,7 @@ let reply; // This variable will store the callback function to reply to the fro
 // Response object structure:
 // response.isCanceled set to True if error caused operation abort
 // response.progress An object containing progress updates
-// response.progress.value  A number between 0-100 dentoing the percent of progress towards completion.
+// response.progress.value  A number between 0-100 denoting the percent of progress towards completion.
 // response.progress.status A String stating the current operating status of the operation
 // response.isComplete set to True when the operation has completed.
 let majorIncrement = 0;
@@ -29,7 +29,7 @@ let fileNames = {};
 // config object structure:
 // config.project: Object of project info
 // config.sourceType: Either "Filter" or "Test Cycle"
-// config.value: Object representing a Filter if sourceType is "Filter" or a Array of Test Cycle objects if source type is "Test Cycle"
+// config.value: Object representing a Filter if sourceType is "Filter" or an Array of Test Cycle objects if source type is "Test Cycle"
 // config.saveLocation: String denoting where the zip file generated should be saved.
 // config.client: The configured JamaClient object ready and available for use.
 // config.reply: A function that allows IPC communication with front end window for status updates.
@@ -157,7 +157,7 @@ function processTestCycle(testCycle, jamaClient, zipArchiver) {
 //###############################################################################################################
 
 // Process ONE filter.
-function processFilter(project, filter, jamaClient, zipArchiver) {
+function processFilter(project, filter, jamaClient, include, zipArchiver) {
   log.info(`Processing filter: [${filter.id}] ${filter.name}`);
   majorIncrement = 100;
 
@@ -170,8 +170,9 @@ function processFilter(project, filter, jamaClient, zipArchiver) {
   if (filter.projectScope === "CURRENT")
     includeParams.append("project", project.id);
 
-  let testRuns = [];
+  let items = [];
   let itemTypes;
+  let itemType;
   let testPlans;
   let testCycles;
 
@@ -179,48 +180,55 @@ function processFilter(project, filter, jamaClient, zipArchiver) {
   return jamaClient
     .getAll(`filters/${filter.id}/results`, includeParams)
     .then((filterResults) => {
-      // Ensure filter only contains testruns, remove non test run items from results.
+      // Ensure filter only contains testruns and testcases, remove other items from results.
       itemTypes = filterResults.linked.itemtypes;
       testPlans = filterResults.linked.testplans;
       testCycles = filterResults.linked.testcycles;
       filterResults.data.forEach((filterResult) => {
         // Check ItemType
-        let itemType = itemTypes[filterResult.itemType];
-        if (itemType.typeKey === "TSTRN") {
-          // Valid Item type.
-          // Append to list of testRuns to fetch attachments for.
-          testRuns.push(filterResult);
+        console.log(filterResult);
+        itemType = itemTypes[filterResult.itemType];
+        if (itemType.typeKey === "TSTRN" || (include && itemType.typeKey === "TC")) {
+          // Append to list of items to fetch attachments for.
+          items.push(filterResult);
         } else {
           log.error(
-            `Item [${filterResult.id}] is not of type Test Run. Item will not be processed.`
+            `Item [${filterResult.id}] is not a test run or test case. Item will not be processed.`
           );
         }
       });
 
       // For each Test Run returned we must fetch the attachments
       return Promise.all(
-        testRuns.map((testRun) =>
-          jamaClient.getAll(`testruns/${testRun.id}/attachments`)
-        )
-      );
+        items.map((item) => {
+          //TODO: Fix error for undefined itemtype here
+            item.data.itemType.typeKey === "TSTRN" ?
+                jamaClient.getAll(`testruns/${item.id}/attachments`) :
+                jamaClient.getAll(`items/${item.id}/attachments`);
+            }));
     })
     .then((values) => {
       let totalAttachmentCount = 0;
       values.forEach((value, index) => {
-        testRuns[index].attachments = value.data;
+        items[index].attachments = value.data;
         totalAttachmentCount += value.data.length;
       });
       minorIncrement = Math.floor(majorIncrement / totalAttachmentCount);
       if (minorIncrement < 1) minorIncrement = 1;
-      return testRuns.reduce((accumulatorPromise, nextTestRun) => {
+      return items.reduce((accumulatorPromise, nextItem) => {
         return accumulatorPromise.then(() => {
-          return processTestRunAttachments(
-            nextTestRun,
-            testCycles[nextTestRun.fields.testCycle],
-            testPlans[nextTestRun.fields.testPlan],
-            jamaClient,
-            zipArchiver
-          );
+          return nextItem.itemType.typeKey === "TSTRN" ?
+            processTestRunAttachments(
+              nextItem,
+              testCycles[nextItem.fields.testCycle],
+              testPlans[nextItem.fields.testPlan],
+              jamaClient,
+              zipArchiver) :
+            processItemAttachments(
+              nextItem,
+              jamaClient,
+              zipArchiver
+            );
         });
       }, Promise.resolve());
     });
@@ -249,6 +257,28 @@ function processTestRunAttachments(
         folderPath,
         jamaClient,
         zipArchiver
+      );
+    });
+  }, Promise.resolve());
+}
+
+// Processes a list of attachments for a Single Item
+function processItemAttachments(
+    item,
+    jamaClient,
+    zipArchiver
+) {
+  log.info("Processing Item: ", item.id);
+
+  let folderPath = `${item.documentKey}/`;
+  // Process each attachment for this test run one at a time to avoid API overload.
+  return item.attachments.reduce((accumulatorPromise, nextAttachment) => {
+    return accumulatorPromise.then(() => {
+      return downloadAttachment(
+          nextAttachment,
+          folderPath,
+          jamaClient,
+          zipArchiver
       );
     });
   }, Promise.resolve());
