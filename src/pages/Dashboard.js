@@ -13,6 +13,7 @@ import {
   withStyles,
   Button,
   LinearProgress,
+  Checkbox
 } from "@material-ui/core";
 import { Autocomplete, Skeleton } from "@material-ui/lab";
 
@@ -43,6 +44,7 @@ class Dashboard extends React.Component {
       sourceValue: "Filter",
       filters: [],
       filtersLoaded: false,
+      includeTestCaseAttachments: false,
       filter: {},
       filterSelected: false,
       testCycles: [],
@@ -73,6 +75,7 @@ class Dashboard extends React.Component {
     );
     this.clearProgressTimeout = this.clearProgressTimeout.bind(this);
     this.setProgressIndeterminate = this.setProgressIndeterminate.bind(this);
+    this.handleIncludeTestCaseAttachments = this.handleIncludeTestCaseAttachments.bind(this);
   }
 
   // Runs when componenet is loaded to screen
@@ -262,6 +265,12 @@ class Dashboard extends React.Component {
     }
   }
 
+  // Called when the Include Test case attachments checkbox changes state
+  handleIncludeTestCaseAttachments(event) {
+    log.info("Include Test Case checkbox change: " + event.target.checked);
+    this.setState({includeTestCaseAttachments: event.target.checked});
+  }
+
   // Called when a test cycle is selected
   handleSelectTestCycle(event, newValue) {
     log.info("Test cycle selected: ", newValue);
@@ -315,6 +324,7 @@ class Dashboard extends React.Component {
         this.state.sourceValue === "Filter"
           ? this.state.filter
           : this.state.selectedTestCycles,
+      includeTestCaseAttachments: this.state.includeTestCaseAttachments,
       saveLocation: this.state.saveLocation,
     });
   }
@@ -376,6 +386,13 @@ class Dashboard extends React.Component {
                     disabled={this.state.processing}
                   />
                 </RadioGroup>
+                <FormControlLabel
+                    value="Include Test Case Attachments"
+                    control={<Checkbox />}
+                    label="Include Test Case Attachments"
+                    disabled={this.state.sourceValue === "Test Cycle"}
+                    onChange={this.handleIncludeTestCaseAttachments}
+                />
               </FormControl>
             </Grid>
             <Grid item>
