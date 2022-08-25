@@ -188,7 +188,7 @@ function processFilter(project, filter, jamaClient, include, zipArchiver) {
             testCycles = filterResults.linked.testcycles;
             filterResults.data.forEach((filterResult) => {
                 // Check ItemType
-                itemType = itemTypes[filterResult.itemType];
+                let itemType = itemTypes[filterResult.itemType];
                 if (itemType.typeKey === "TSTRN" || (include === true && itemType.typeKey === "TC")) {
                     // Append to list of items to fetch attachments for.
                     items.push(filterResult);
@@ -202,7 +202,6 @@ function processFilter(project, filter, jamaClient, include, zipArchiver) {
             // For each test run or test case returned, we must fetch the attachments
             return Promise.all(
                 items.map((item) => {
-                    itemType = itemTypes[item.itemType];
                     itemType = itemTypes[item.itemType];
                     if (itemType.typeKey === "TSTRN") {
                         return jamaClient.getAll(`testruns/${item.id}/attachments`);
