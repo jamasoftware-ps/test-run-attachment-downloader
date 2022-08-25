@@ -267,8 +267,8 @@ class Dashboard extends React.Component {
 
   // Called when the Include Test case attachments checkbox changes state
   handleIncludeTestCaseAttachments(event) {
-    log.info("Include Test Case checkbox change: " + event.target.value);
-    this.setState({includeTestCaseAttachments: event.target.value});
+    log.info("Include Test Case checkbox change: " + event.target.checked);
+    this.setState({includeTestCaseAttachments: event.target.checked});
   }
 
   // Called when a test cycle is selected
